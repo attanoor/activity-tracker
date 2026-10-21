@@ -128,3 +128,7 @@ cd apps\web; npm run e2e                                 # Playwright against th
   other sheets are kept.
 - Per-person Google connection needs https. The service-account mode needs Google Workspace.
 - Idle starts after 5 minutes without input, so the minutes before that count as the last activity.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
