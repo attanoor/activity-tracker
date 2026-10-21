@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "Activity Tracker",
+  "version": "0.1.1",
+  "description": "Tells the Activity Tracker agent on this PC which site is in the active tab. Works only with the agent installed.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAy1hm+9LJdrRddnRQalRQfeV6fAhDz3mgJEwxSpdWoXdtRb00w1QhVyiM2GMX/XX9ToQ9a5JowI+8mAhRWSApoDa35sMUyhWO79Wr36aQJMhEC4SrVbNiRobrKH9nF3IFS/m+blawBcaovCf+2H3XFB8bJlokvvuWIU3dAfKOlyf12VHwsw9gGo46WGVXMLeHVv2BSeICX7Mb99mEVcIEC4ZJ5CbKMAV/igab/AwPWzefbnpKX1OEvIbjdiPGUoAgiqKOYM9P7DAs/Hnc/GIYDhdRyf9ngztk58tk5iIbAjtW5XkKr3h4iafL9sR72NdAWCqAvQr2i0aGxU5K9+a8EwIDAQAB",
+  "permissions": [
+    "tabs",
+    "alarms",
+    "storage"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:47823/*"
+  ],
+  "incognito": "not_allowed",
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Activity Tracker",
+    "default_icon": {
+      "16": "icons/16.png",
+      "32": "icons/32.png"
+    }
+  },
+  "icons": {
+    "16": "icons/16.png",
+    "32": "icons/32.png",
+    "48": "icons/48.png",
+    "128": "icons/128.png"
+  }
+}

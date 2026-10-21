@@ -1,0 +1,95 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: 248 249 251;
+  --surface: 255 255 255;
+  --line: 228 231 236;
+  --fg: 16 24 40;
+  --muted: 71 84 103;
+  --accent: 18 128 90;
+  --accent-fg: 255 255 255;
+  --danger: 180 35 24;
+  --ok: 2 122 72;
+  /* Chart buckets: categorical slots 1-5 for activity (validated in order), recessive greys for non-activity. */
+  --b-productive: #2a78d6;
+  --b-meeting: #eb6834;
+  --b-communication: #1baf7a;
+  --b-neutral: #eda100;
+  --b-non_work: #e87ba4;
+  --b-idle: #b9b7ae;
+  --b-private: #8f8d86;
+  --b-break: #dcdad2;
+  --b-away: #ecebe5;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --seq-0: #f0efec;
+  --seq-1: #cde2fb;
+  --seq-2: #9ec5f4;
+  --seq-3: #5598e7;
+  --seq-4: #256abf;
+  --seq-5: #104281;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: 12 17 29;
+    --surface: 22 27 38;
+    --line: 43 50 64;
+    --fg: 242 244 247;
+    --muted: 152 162 179;
+    --accent: 50 213 131;
+    --accent-fg: 5 40 25;
+    --danger: 253 162 155;
+    --ok: 117 224 167;
+    --b-productive: #3987e5;
+    --b-meeting: #d95926;
+    --b-communication: #199e70;
+    --b-neutral: #c98500;
+    --b-non_work: #d55181;
+    --b-idle: #5d5c57;
+    --b-private: #7a7973;
+    --b-break: #3f3e3b;
+    --b-away: #2c2c2a;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --seq-0: #2a2a28;
+    --seq-1: #104281;
+    --seq-2: #1c5cab;
+    --seq-3: #2a78d6;
+    --seq-4: #5598e7;
+    --seq-5: #9ec5f4;
+    color-scheme: dark;
+  }
+}
+
+body {
+  @apply bg-bg text-fg font-sans antialiased;
+}
+
+/* In the components layer so utilities on an element (w-auto, px-3 ...) override these defaults. */
+@layer components {
+  .card {
+    @apply rounded-xl border border-line bg-surface p-5 sm:p-6;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition
+      focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent
+      disabled:cursor-not-allowed disabled:opacity-60;
+  }
+  .btn-primary {
+    @apply btn bg-accent text-accent-fg hover:brightness-110;
+  }
+  .btn-secondary {
+    @apply btn border border-line bg-surface text-fg hover:bg-bg;
+  }
+  .field {
+    @apply block w-full rounded-lg border border-line bg-surface px-3 py-2 text-fg
+      focus:outline focus:outline-2 focus:outline-accent;
+  }
+  .tooltip {
+    @apply pointer-events-none fixed z-50 max-w-xs rounded-lg border border-line bg-surface px-3 py-2 text-xs text-fg shadow-lg;
+  }
+}
