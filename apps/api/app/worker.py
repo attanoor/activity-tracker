@@ -184,6 +184,10 @@ def excel_mime() -> str:
 def job_nightly(db: Session, now: datetime) -> None:
     if now.astimezone().hour < 2 or not once(db, f"nightly:{now.astimezone():%Y%m%d}"):
         return
+    from app.clients import learn as learner
+    from app.routers.clients import llm_namer
+    learned = learner.learn(db, (now - timedelta(days=14)).date(), llm_namer(db))
+    log.info("client suggestions: %s", learned)
     days = settings_store.get(db, "tracking")["retention_days"]
     n = db.execute(delete(RawEvent).where(RawEvent.started_at < now - timedelta(days=days))).rowcount
     db.commit()

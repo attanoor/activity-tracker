@@ -25,6 +25,36 @@ Plan and decisions: [docs/plan.md](docs/plan.md).
 | **Account** | everyone | Change password, Google connection (per-person mode) |
 | **Admin** | admins | People & teams (shift/break/manager, PCs, setup codes, password reset, Mantis/Google identity) · Category rules + AI rule suggestions · Integrations (AI, Google, Mantis, email, retention, shared folder, sync now) · Excel template (upload, map cells/columns, preview, activate) |
 
+## Clients (clubs)
+
+The tracker works out **which client each minute and each email was for**. It replaces the old "NS Employee
+Performance Tracker" Google Sheet, so nobody types activity in by hand any more.
+
+**How a client is recognised.** The first match wins:
+1. the club's website or backoffice address
+2. the club name shown on the page (the extension reads headings, breadcrumb, menu and club name; never typed values)
+3. the Mantis project of a ticket
+4. the email addresses in the Gmail thread that is open (headers only)
+5. the domains of meeting guests
+
+Your own company domains and public mailboxes never count. Only clients an admin has **confirmed** are used.
+
+**The client list.** Admin → Clients is where it's kept:
+- **Import:** paste the club list (for example MantisClubs).
+- **Learn now:** the tracker looks at recent work, and the AI proposes names.
+- **Review:** confirm, merge or ignore suggestions, and add websites or email domains.
+
+**What people and managers see:**
+- **My Day:** "Time by client", split into website/backoffice, email, tickets, meetings, and work logged away
+  from the PC (calls, site visits). Tasks are named "<Club>: <work>".
+- **Team:** top clients per person, plus the team's time by client.
+- **Excel:** a "By Client" sheet. The template fields `{client}`, `{client_hours}`, `{clients_summary}` and
+  `{task_client}`.
+- **Tickets:** for each client, how many were reported (by issue type), responded to, resolved and reopened.
+
+**Daily lock.** A day can be changed until 12 hours after it ends (setting `edit_hours_after_day`). After that,
+or once the report is submitted, only a manager's **Reopen this day** opens it again. Reopening is audited.
+
 ## How the report is built
 
 1. **Sessions** (`app/pipeline`): spans from the agent are split per local day. Overlaps are never counted
@@ -107,9 +137,9 @@ Each job runs once per key (`job_runs`), even across restarts. Logs are in `.loc
 ## Tests
 
 ```powershell
-cd apps\api; ..\..\.venv\Scripts\python -m pytest -q    # 69 tests: pipeline, analysis, AI guards, integrations (recorded APIs), exports, worker, access
+cd apps\api; ..\..\.venv\Scripts\python -m pytest -q    # 79 tests: pipeline, analysis, AI guards, integrations (recorded APIs), clients, lock, exports, worker, access
 cd agent;    ..\.venv\Scripts\python -m pytest -q       # 16 tests: sampling logic, outbox, local listener origin check
-cd apps\web; npm run e2e                                 # Playwright against the running stack (uses the real local model)
+cd apps\web; npm run e2e                                 # 8 Playwright tests: the running stack (real local model) and the extension's page reader
 ```
 
 ## Privacy and access

@@ -13,6 +13,7 @@ from sqlalchemy import (
     Time,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -99,6 +100,8 @@ class RawEvent(Base):
     title: Mapped[str | None] = mapped_column(Text)
     url: Mapped[str | None] = mapped_column(Text)
     domain: Mapped[str | None] = mapped_column(String(255))
+    # What the page showed (headings, breadcrumb, club name), read by the extension; never typed values.
+    context: Mapped[dict | None] = mapped_column(JSONB)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -138,6 +141,11 @@ class ActivitySession(Base):
     paths: Mapped[list] = mapped_column(JSONB, default=list)
     category_id: Mapped[int | None] = mapped_column(ForeignKey("categories.id", ondelete="SET NULL"))
     klass: Mapped[str] = mapped_column(String(16))
+    # Page context: the club read from the page, the section path with the most time, and the top few.
+    club: Mapped[str | None] = mapped_column(String(200))
+    section: Mapped[str | None] = mapped_column(Text)
+    contexts: Mapped[list] = mapped_column(JSONB, default=list, server_default=text("'[]'::jsonb"))
+    client_id: Mapped[int | None] = mapped_column(ForeignKey("clients.id", ondelete="SET NULL"))
 
 
 class AuditLog(Base):
@@ -186,6 +194,7 @@ class CalendarEvent(Base):
     organizer: Mapped[str | None] = mapped_column(String(254))
     # The person's own answer to "did you attend?" when activity made it unclear; None = not answered.
     attended: Mapped[bool | None] = mapped_column(Boolean)
+    attendee_domains: Mapped[list] = mapped_column(JSONB, default=list, server_default=text("'[]'::jsonb"))
 
 
 class WorkAction(Base):
@@ -229,6 +238,7 @@ class DsrReport(Base):
     submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     reviewed: Mapped[bool] = mapped_column(Boolean, default=False)
+    reopened_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
 
 
 class AiCache(Base):
@@ -292,3 +302,57 @@ class JobRun(Base):
     key: Mapped[str] = mapped_column(String(120), primary_key=True)
     ran_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     detail: Mapped[dict] = mapped_column(JSONB, default=dict)
+
+
+class Client(Base):
+    """A club (customer). Learned from domains, page text, emails and Mantis; confirmed by an admin."""
+
+    __tablename__ = "clients"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), unique=True)
+    status: Mapped[str] = mapped_column(String(16), default="suggested")  # suggested | confirmed | ignored
+    notes: Mapped[str] = mapped_column(Text, default="")
+    seconds_seen: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ClientIdentifier(Base):
+    """One way to recognise a client: a web or email domain, an address, a name alias, a Mantis project."""
+
+    __tablename__ = "client_identifiers"
+    __table_args__ = (UniqueConstraint("kind", "value", name="uq_client_identifiers_kind_value"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    client_id: Mapped[int] = mapped_column(ForeignKey("clients.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(16))  # web_domain | email_domain | email_address | name_alias | mantis_project
+    value: Mapped[str] = mapped_column(String(255))  # stored lower-case
+    source: Mapped[str] = mapped_column(String(16), default="learned")  # learned | admin | import
+
+
+class Ticket(Base):
+    """Mantis tickets seen in syncs or in the browser, so time on a ticket page maps to its project (club)."""
+
+    __tablename__ = "tickets"
+    id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    project: Mapped[str | None] = mapped_column(String(200))
+    summary: Mapped[str] = mapped_column(Text, default="")
+    category: Mapped[str | None] = mapped_column(String(120))
+    severity: Mapped[str | None] = mapped_column(String(40))
+    priority: Mapped[str | None] = mapped_column(String(40))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class ManualEntry(Base):
+    """Work the tracker could not see (a site visit, a phone call away from the PC), logged by the person."""
+
+    __tablename__ = "manual_entries"
+    __table_args__ = (Index("ix_manual_entries_user_day", "user_id", "day"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    day: Mapped[date] = mapped_column(Date)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    ended_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    kind: Mapped[str] = mapped_column(String(16))  # call | site_visit | meeting | other
+    title: Mapped[str] = mapped_column(String(200))
+    client_id: Mapped[int | None] = mapped_column(ForeignKey("clients.id", ondelete="SET NULL"))
+    note: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

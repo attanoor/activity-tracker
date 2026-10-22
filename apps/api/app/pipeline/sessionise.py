@@ -4,8 +4,11 @@ Rules:
 - Spans are clipped to the requested local day, so a span crossing midnight lands in both days.
 - Overlapping spans (two devices, or a late duplicate) are clipped: time is never counted twice.
 - Consecutive spans with the same key merge when the gap between them is at most `merge_gap_s`.
-  Active spans key on (app, domain); idle/locked/private/paused key on the kind alone.
+  Active spans key on (app, domain, club), plus the thread title in webmail; idle/locked/private/paused key on
+  the kind alone.
 - Private and paused spans never carry details, even if a device sent them.
+- Page context (club name and section read by the extension) is kept per session; the club is part of the
+  merge key, so switching club inside one backoffice starts a new session.
 """
 
 from collections import Counter
@@ -27,6 +30,7 @@ class Span:
     title: str | None = None
     url: str | None = None
     domain: str | None = None
+    context: dict | None = None
 
     @property
     def ended_at(self) -> datetime:
@@ -43,6 +47,7 @@ class SessionDraft:
     key: tuple = ()
     title_secs: Counter = field(default_factory=Counter)
     path_secs: Counter = field(default_factory=Counter)
+    context_secs: Counter = field(default_factory=Counter)  # (section, club) -> seconds
 
     @property
     def duration_s(self) -> int:
@@ -60,6 +65,41 @@ class SessionDraft:
     def paths(self) -> list[list]:
         return [[p, s] for p, s in self.path_secs.most_common(TOP_N)]
 
+    @property
+    def contexts(self) -> list[list]:
+        return [[sec, club, s] for (sec, club), s in self.context_secs.most_common(TOP_N)]
+
+    @property
+    def club(self) -> str | None:
+        clubs = Counter()
+        for (_, club), s in self.context_secs.items():
+            if club:
+                clubs[club] += s
+        return clubs.most_common(1)[0][0] if clubs else None
+
+    @property
+    def section(self) -> str | None:
+        secs = Counter()
+        for (sec, _), s in self.context_secs.items():
+            if sec:
+                secs[sec] += s
+        return secs.most_common(1)[0][0] if secs else None
+
+
+def _clip(v, n: int = 200) -> str:
+    return " ".join(str(v or "").split())[:n]
+
+
+def context_summary(ctx: dict | None) -> tuple[str | None, str | None]:
+    """(club, section) from the extension's page context. The section is the breadcrumb path, else the active
+    menu item, form heading or h1."""
+    if not ctx:
+        return None, None
+    clubs = [c for c in (ctx.get("clubs") or []) if isinstance(c, str) and c.strip()]
+    crumbs = [_clip(c, 60) for c in (ctx.get("crumbs") or []) if isinstance(c, str) and c.strip()]
+    section = " \u203a ".join(crumbs[:5]) if crumbs else (ctx.get("menu") or ctx.get("heading") or ctx.get("h1"))
+    return (_clip(clubs[0], 120) if clubs else None), (_clip(section) or None)
+
 
 def day_bounds(day: date, tz: str) -> tuple[datetime, datetime]:
     zone = ZoneInfo(tz)
@@ -68,9 +108,15 @@ def day_bounds(day: date, tz: str) -> tuple[datetime, datetime]:
     return start, end
 
 
+# In webmail each thread is its own piece of work (time per email/client), so the title splits sessions there.
+MAIL_DOMAINS = {"mail.google.com", "outlook.office.com", "outlook.live.com", "outlook.office365.com"}
+
+
 def _key(s: Span) -> tuple:
     if s.kind == "active":
-        return ("active", (s.app or "").lower(), (s.domain or "").lower())
+        club, _ = context_summary(s.context)
+        thread = (s.title or "") if (s.domain or "").lower() in MAIL_DOMAINS else ""
+        return ("active", (s.app or "").lower(), (s.domain or "").lower(), (club or "").lower(), thread)
     return (s.kind,)
 
 
@@ -80,7 +126,8 @@ def _clean(s: Span) -> Span:
     domain = s.domain
     if s.url and not domain:
         domain = urlsplit(s.url).hostname
-    return Span(s.started_at, s.duration_s, s.kind, s.app, s.title, s.url, domain.lower() if domain else None)
+    return Span(s.started_at, s.duration_s, s.kind, s.app, s.title, s.url, domain.lower() if domain else None,
+                s.context)
 
 
 def sessionise(spans: list[Span], day: date, tz: str, merge_gap_s: int = 30) -> list[SessionDraft]:
@@ -109,5 +156,9 @@ def sessionise(spans: list[Span], day: date, tz: str, merge_gap_s: int = 30) -> 
             # The query is kept (trimmed) because it often names the object, e.g. view.php?id=12345.
             path = ((parts.path or "/") + (f"?{parts.query}" if parts.query else ""))[:300]
             cur.path_secs[path] += secs
+        if s.context:
+            club, section = context_summary(s.context)
+            if club or section:
+                cur.context_secs[(section, club)] += secs
         cursor = end
     return out

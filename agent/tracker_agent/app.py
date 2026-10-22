@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 import webbrowser
 import winreg
 from datetime import UTC, datetime, timedelta
@@ -14,13 +15,14 @@ from PIL import Image, ImageDraw
 
 from tracker_agent import __version__, config, setup_dialog, uploader, win
 from tracker_agent.core import Coalescer, State, build_sample
-from tracker_agent.local_server import TabStore
+from tracker_agent.local_server import DEFAULT_RULES, TabStore
 from tracker_agent.local_server import start as start_local_server
 from tracker_agent.outbox import Outbox
 
 log = logging.getLogger("agent")
 SAMPLE_S = 5
 UPLOAD_S = 60
+RULES_S = 600
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 RUN_NAME = "ActivityTracker"
 COLORS = {"tracking": "#12b76a", "paused": "#f79009", "private": "#667085", "disconnected": "#f04438"}
@@ -54,6 +56,7 @@ class Agent:
         self.last_error: str | None = None
         self.icon: pystray.Icon | None = None
         self._shown_mode: str | None = None
+        self.rules: dict = dict(DEFAULT_RULES)
 
     # --- state -------------------------------------------------------------------------------------
     def mode(self) -> str:
@@ -129,8 +132,21 @@ class Agent:
             self.outbox.remove([e["seq"] for e in events])
             self.last_sent, self.last_error, self.unauthorized = datetime.now(UTC), None, False
 
+    def refresh_rules(self) -> None:
+        token = config.get_token()
+        if not token:
+            return
+        try:
+            self.rules = uploader.page_rules(self.cfg.api, token)
+        except Exception as e:  # keep the last rules; uploads report connection problems
+            log.info("page rules not refreshed: %s", e)
+
     def upload_loop(self) -> None:
+        last_rules = 0.0
         while not self.stop.is_set():
+            if time.monotonic() - last_rules > RULES_S:
+                self.refresh_rules()
+                last_rules = time.monotonic()
             self.upload_once()
             self.upload_now.wait(UPLOAD_S)
             self.upload_now.clear()
@@ -256,8 +272,11 @@ def main() -> int:
                 "version": __version__, "server": cfg.server}
 
     server = None
+    def page_rules() -> dict:
+        return running["agent"].rules if "agent" in running else DEFAULT_RULES
+
     try:
-        server = start_local_server(config.LOCAL_PORT, tabs, status)
+        server = start_local_server(config.LOCAL_PORT, tabs, status, page_rules)
     except OSError:
         log.error("port %s is in use; the browser extension cannot reach the agent", config.LOCAL_PORT)
     if not config.get_token():

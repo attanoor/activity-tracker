@@ -56,6 +56,9 @@ def db(migrated):
         c.execute(text(f"TRUNCATE {tables} RESTART IDENTITY CASCADE"))
     with SessionLocal() as s:
         ensure_defaults(s)
+        # Fixtures use fixed past dates; the daily lock is tested on its own in test_clients.py.
+        from app import settings_store
+        settings_store.update(s, "tracking", {"edit_hours_after_day": 24 * 365 * 20})
         yield s
 
 

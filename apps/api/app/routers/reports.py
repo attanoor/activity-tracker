@@ -24,10 +24,16 @@ router = APIRouter(tags=["reports"])
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
-def _dsr_out(r: DsrReport | None) -> dict | None:
+def _dsr_out(r: DsrReport | None, db: Session | None = None, user: User | None = None) -> dict | None:
     if not r:
         return None
-    return {"id": r.id, "day": r.day, "status": r.status, "ai_status": r.ai_status, "model": r.model,
+    lock = {}
+    if db is not None and user is not None:
+        from app.routers.clients import can_edit_day, edit_deadline
+        ok, why = can_edit_day(db, user, r.day)
+        lock = {"editable": ok, "locked_reason": why, "edit_deadline": edit_deadline(db, user, r.day),
+                "reopened": r.reopened_by is not None}
+    return {**lock,"id": r.id, "day": r.day, "status": r.status, "ai_status": r.ai_status, "model": r.model,
             "content": copy.deepcopy(r.content), "edited": r.content != r.original, "generated_at": r.generated_at,
             "submitted_at": r.submitted_at, "sent_at": r.sent_at, "reviewed": r.reviewed}
 
@@ -48,7 +54,7 @@ def _for_manager(db: Session, out: dict) -> dict:
 def overview(db: Session, user: User, day: date, viewer: User) -> dict:
     d = service.compute_day(db, user, day)
     dsr = db.scalar(select(DsrReport).where(DsrReport.user_id == user.id, DsrReport.day == day))
-    dsr_out = _dsr_out(dsr)
+    dsr_out = _dsr_out(dsr, db, user)
     if dsr_out and viewer.id != user.id:
         dsr_out = _for_manager(db, dsr_out)
     hide_subjects = viewer.id != user.id and not settings_store.get(db, "google")["show_subjects_to_managers"]
@@ -81,9 +87,10 @@ def person_overview(user_id: int, day: date, viewer: User = Depends(current_user
 def generate(day: date, user: User = Depends(current_user), db: Session = Depends(get_db)):
     """Starts writing the report in the background (the model takes about a minute) and returns at once.
     The page polls the overview, whose `generating` flag is true until the draft is saved."""
-    existing = db.scalar(select(DsrReport).where(DsrReport.user_id == user.id, DsrReport.day == day))
-    if existing and existing.status != "draft":
-        raise HTTPException(409, "This report was already submitted; it can no longer be regenerated")
+    from app.routers.clients import can_edit_day
+    ok, why = can_edit_day(db, user, day)
+    if not ok:
+        raise HTTPException(409, why)
     return {"generating": generation.start(user.id, day)}
 
 
@@ -103,11 +110,13 @@ class DsrEdit(BaseModel):
 
 
 def _own_draft(db: Session, user: User, day: date) -> DsrReport:
+    from app.routers.clients import can_edit_day
     r = db.scalar(select(DsrReport).where(DsrReport.user_id == user.id, DsrReport.day == day))
     if not r:
         raise HTTPException(404, "No report for this day yet; generate it first")
-    if r.status != "draft":
-        raise HTTPException(409, "This report was already submitted")
+    ok, why = can_edit_day(db, user, day)
+    if not ok:
+        raise HTTPException(409, why)
     return r
 
 
@@ -129,10 +138,28 @@ def edit(day: date, body: DsrEdit, user: User = Depends(current_user), db: Sessi
 @router.post("/me/dsr/{day}/submit")
 def submit(day: date, user: User = Depends(current_user), db: Session = Depends(get_db)):
     r = _own_draft(db, user, day)
-    r.status, r.submitted_at, r.reviewed = "submitted", datetime.now(UTC), True
+    r.status, r.submitted_at, r.reviewed, r.reopened_by = "submitted", datetime.now(UTC), True, None
     audit(db, user.id, "dsr.submit", f"dsr:{r.id}", {"edited": r.content != r.original})
     db.commit()
     return _dsr_out(r)
+
+
+@router.post("/people/{user_id}/dsr/{day}/reopen")
+def reopen(user_id: int, day: date, viewer: User = Depends(current_user), db: Session = Depends(get_db)):
+    """A manager (or admin) reopens a submitted or closed day so the person can correct it."""
+    if viewer.role not in ("manager", "admin"):
+        raise HTTPException(403, "Only managers can reopen a report")
+    u = target_user(db, viewer, user_id, "reopen")
+    r = db.scalar(select(DsrReport).where(DsrReport.user_id == u.id, DsrReport.day == day))
+    if not r:
+        empty = {"tasks": [], "highlights": [], "blockers": [], "tomorrow": [], "insights": "", "suggestions": [],
+                 "sections": {}, "items": {}, "meetings": [], "work_output": {}, "time_by_client": []}
+        r = DsrReport(user_id=u.id, day=day, content=empty, original=empty, ai_status="fallback")
+        db.add(r)
+    r.status, r.reopened_by = "draft", viewer.id
+    audit(db, viewer.id, "dsr.reopen", f"user:{u.id}", {"day": day.isoformat()})
+    db.commit()
+    return _dsr_out(r, db, u)
 
 
 class Attendance(BaseModel):

@@ -4,6 +4,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 
 import CopyField from "@/components/CopyField";
+import Clients from "@/components/admin/Clients";
 import Integrations from "@/components/admin/Integrations";
 import Rules from "@/components/admin/Rules";
 import Template from "@/components/admin/Template";
@@ -383,6 +384,7 @@ function AdminPage() {
 
 const TABS = [
   { key: "people", label: "People & teams" },
+  { key: "clients", label: "Clients" },
   { key: "rules", label: "Category rules" },
   { key: "integrations", label: "Integrations" },
   { key: "template", label: "Excel template" },
@@ -405,6 +407,7 @@ function AdminTabs() {
         ))}
       </nav>
       {tab === "people" && <AdminPage />}
+      {tab === "clients" && <Clients />}
       {tab === "rules" && <Rules />}
       {tab === "integrations" && <Integrations />}
       {tab === "template" && <Template />}

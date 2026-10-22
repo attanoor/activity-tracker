@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.integrations.google_sync import _add_action
-from app.models import Team, User
+from app.models import Team, Ticket, User
 
 TOKEN_ENV = "TRACKER_MANTIS_TOKEN"
 CLOSED = {"resolved", "closed"}
@@ -92,10 +92,41 @@ def actions_for_issue(issue: dict, since: datetime) -> list[dict]:
         if action:
             key = f"mantis:{iid}:h:{h['created_at']}:{field or kind}:{i}"
             out.append({"key": key, "who": h.get("user"), "action": action, "at": at, "meta": meta})
+    kind = issue_kind(issue)
     for a in out:
         a["issue_id"], a["title"] = iid, title
-        a["meta"]["project"] = (issue.get("project") or {}).get("name")
+        a["meta"].update(kind)
     return out
+
+
+def issue_kind(issue: dict) -> dict:
+    """Project (the club), category, severity and priority, for 'types of issues' reporting."""
+    name = lambda f: ((issue.get(f) or {}).get("name") if isinstance(issue.get(f), dict) else issue.get(f))  # noqa: E731
+    return {"project": name("project"), "category": name("category"), "severity": name("severity"),
+            "priority": name("priority")}
+
+
+def remember_ticket(db: Session, issue: dict) -> None:
+    k = issue_kind(issue)
+    t = db.get(Ticket, str(issue["id"])) or Ticket(id=str(issue["id"]))
+    t.project, t.summary, t.category = k["project"], issue.get("summary", "")[:2000], k["category"]
+    t.severity, t.priority = k["severity"], k["priority"]
+    db.add(t)
+
+
+def lookup(db: Session, base_url: str, ticket_ids: list[str], http: httpx.Client, api_token: str | None = None) -> int:
+    """Fetch tickets viewed in the browser that the cache doesn't know yet (read-only)."""
+    headers = {"Authorization": api_token or token()}
+    n = 0
+    for tid in ticket_ids:
+        if db.get(Ticket, tid):
+            continue
+        r = http.get(f"{base_url.rstrip('/')}/api/rest/issues/{tid}", headers=headers)
+        if r.status_code == 200 and r.json().get("issues"):
+            remember_ticket(db, r.json()["issues"][0])
+            n += 1
+    db.commit()
+    return n
 
 
 def sync(db: Session, base_url: str, since: datetime, http: httpx.Client, api_token: str | None = None) -> dict:
@@ -117,6 +148,7 @@ def sync(db: Session, base_url: str, since: datetime, http: httpx.Client, api_to
             full = http.get(f"{base}/issues/{summary['id']}", headers=headers)
             full.raise_for_status()
             issue = full.json()["issues"][0]
+            remember_ticket(db, issue)
             for a in actions_for_issue(issue, since):
                 user = matcher.match(a["who"])
                 if not user:

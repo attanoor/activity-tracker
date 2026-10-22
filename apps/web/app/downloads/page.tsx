@@ -183,6 +183,8 @@ function DownloadsPage() {
             <ul className="mt-1 list-disc space-y-1 pl-5">
               <li>The app and window title in front, and for how long</li>
               <li>The site and page title of the active browser tab</li>
+              <li>On work sites, what the page is about: its headings, menu path and the club name shown, so time
+                can be put against the right client</li>
               <li>Idle time (no keyboard or mouse for 5 minutes) and when the PC is locked</li>
             </ul>
           </div>
@@ -190,7 +192,7 @@ function DownloadsPage() {
             <h3 className="font-medium text-danger">Never recorded</h3>
             <ul className="mt-1 list-disc space-y-1 pl-5">
               <li>Screenshots, keystrokes or the clipboard</li>
-              <li>Page contents, or anything in incognito/InPrivate windows</li>
+              <li>What you type into any field, email bodies, page contents, or anything in incognito/InPrivate windows</li>
               <li>Any detail while paused or in Private mode, beyond the time itself</li>
             </ul>
           </div>

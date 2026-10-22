@@ -22,15 +22,18 @@ class Sample:
     title: str | None = None
     url: str | None = None
     domain: str | None = None
+    context: dict | None = None  # page headings / menu / club name from the extension
 
     def same_activity(self, other: "Sample") -> bool:
-        return (self.kind, self.app, self.title, self.url) == (other.kind, other.app, other.title, other.url)
+        return ((self.kind, self.app, self.title, self.url, self.context) ==
+                (other.kind, other.app, other.title, other.url, other.context))
 
 
 @dataclass
 class Tab:
     url: str
     title: str
+    context: dict | None = None
 
 
 @dataclass
@@ -62,15 +65,15 @@ def build_sample(now: datetime, state: State, app: str | None, title: str | None
     if idle_s >= state.idle_threshold_s:
         return Sample(now, "idle")
     app = app.lower() if app else None
-    url = domain = None
+    url = domain = context = None
     tab = tabs.get(app) if app in BROWSERS else None
     if tab and tab.url.startswith(("http://", "https://")):
         parts = urlsplit(tab.url)
         domain = (parts.hostname or "").lower() or None
-        url, title = tab.url, tab.title or title
+        url, title, context = tab.url, tab.title or title, tab.context
         if domain and _domain_only(domain, state.domain_only):
-            url, title = f"{parts.scheme}://{domain}/", domain
-    return Sample(now, "active", app, (title or None), url, domain)
+            url, title, context = f"{parts.scheme}://{domain}/", domain, None
+    return Sample(now, "active", app, (title or None), url, domain, context or None)
 
 
 @dataclass
@@ -93,6 +96,7 @@ class Span:
             "title": s.title if detail else None,
             "url": s.url if detail else None,
             "domain": s.domain if detail else None,
+            "context": s.context if detail else None,
         }
 
 

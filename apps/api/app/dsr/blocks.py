@@ -28,7 +28,7 @@ BROWSER_SUFFIX = re.compile(r"\s+-\s+(Google Chrome|Microsoft​? Edge|Personal 
 class Block:
     id: str
     key: str
-    kind: str          # ticket | doc | repo | app | misc
+    kind: str          # ticket | doc | repo | client | app | misc
     label: str
     category: str | None
     klass: str
@@ -37,13 +37,16 @@ class Block:
     first: str | None = None
     last: str | None = None
     ticket_id: str | None = None
+    client: str | None = None
     titles: Counter = field(default_factory=Counter)
+    sections: Counter = field(default_factory=Counter)
 
     def as_dict(self) -> dict:
         return {"id": self.id, "key": self.key, "kind": self.kind, "label": self.label, "category": self.category,
                 "klass": self.klass, "seconds": self.seconds, "minutes": round(self.seconds / 60),
                 "sessions": self.sessions, "first": self.first, "last": self.last, "ticket_id": self.ticket_id,
-                "titles": [t for t, _ in self.titles.most_common(5)]}
+                "client": self.client, "titles": [t for t, _ in self.titles.most_common(5)],
+                "sections": [x for x, _ in self.sections.most_common(4)]}
 
 
 def clean_title(title: str | None) -> str:
@@ -63,10 +66,29 @@ def ticket_of(title: str | None, paths: list, domain: str | None) -> str | None:
     return None
 
 
-def block_key(s) -> tuple[str, str, str, str | None]:
-    """(key, kind, label, ticket_id) for one session."""
+SECTION_SEP = " \u203a "
+
+
+def section_head(section: str | None, depth: int = 2) -> str | None:
+    """'Backoffice › Membership › Billing › Edit' -> 'Membership › Billing' style grouping (first parts)."""
+    if not section:
+        return None
+    parts = [p for p in section.split(SECTION_SEP) if p.strip()]
+    if len(parts) > depth and parts[0].lower() in ("home", "dashboard", "backoffice", "admin"):
+        parts = parts[1:]
+    return SECTION_SEP.join(parts[:depth]) or None
+
+
+def block_key(s, client: str | None = None) -> tuple[str, str, str, str | None]:
+    """(key, kind, label, ticket_id) for one session. Work on a known client's site groups by client and page
+    section, e.g. 'River Club › Membership › Billing'."""
     title = clean_title(s.title)
     tid = ticket_of(s.title, s.paths, s.domain)
+    if not tid and client and s.klass == "productive":
+        head = section_head(getattr(s, "section", None))
+        cid = getattr(s, "client_id", None)
+        return (f"client:{cid}:{(head or '').lower()}", "client",
+                f"{client}{SECTION_SEP}{head}" if head else client, None)
     if tid:
         return f"ticket:{tid}", "ticket", re.sub(r"\s+-\s+MantisBT$", "", MANTIS_TITLE.sub("", title)) or f"Ticket {tid}", tid
     if s.domain in ("docs.google.com",) or (s.app or "").lower() in ("winword.exe", "excel.exe", "powerpnt.exe"):
@@ -82,19 +104,24 @@ def block_key(s) -> tuple[str, str, str, str | None]:
     return f"app:{target.lower()}", "app", label, None
 
 
-def build_blocks(sessions) -> tuple[list[dict], list[dict]]:
-    """Returns (task blocks, non-work blocks). `sessions` are ActivitySession-like rows with a `category` name."""
+def build_blocks(sessions, client_names: dict | None = None) -> tuple[list[dict], list[dict]]:
+    """Returns (task blocks, non-work blocks). `sessions` are ActivitySession-like rows with a `category` name;
+    `client_names` maps client ids to names for sessions attributed to a client."""
+    names = client_names or {}
     blocks: dict[str, Block] = {}
     for s in sessions:
         if s.klass not in TASK_KLASSES and s.klass != "non_work":
             continue
-        key, kind, label, tid = block_key(s)
+        client = names.get(getattr(s, "client_id", None))
+        key, kind, label, tid = block_key(s, client)
         if s.klass == "non_work":
             key = f"nonwork:{(s.domain or s.app or 'unknown').lower()}"
             kind, label = "app", s.domain or s.app or "unknown"
         b = blocks.get(key)
         if not b:
-            b = blocks[key] = Block("", key, kind, label, s.category, s.klass, ticket_id=tid)
+            b = blocks[key] = Block("", key, kind, label, s.category, s.klass, ticket_id=tid, client=client)
+        if getattr(s, "section", None):
+            b.sections[s.section] += s.duration_s
         b.seconds += s.duration_s
         b.sessions += 1
         b.first = min(filter(None, [b.first, s.started_at.isoformat()]))
@@ -109,11 +136,12 @@ def build_blocks(sessions) -> tuple[list[dict], list[dict]]:
         elif b.seconds >= MIN_BLOCK_S or b.kind == "ticket":
             task.append(b)
         else:
-            # Many tiny visits are one block per category, e.g. "Other Search/Reference".
-            cat = b.category or "Other"
+            # Many tiny visits are one block per category (or per client), e.g. "Other Search/Reference".
+            cat = b.client or b.category or "Other"
             m = misc.get(cat)
             if not m:
-                m = misc[cat] = Block("", f"misc:{cat.lower()}", "misc", f"Other {cat}", b.category, b.klass)
+                label = f"{b.client}: other pages" if b.client else f"Other {cat}"
+                m = misc[cat] = Block("", f"misc:{cat.lower()}", "misc", label, b.category, b.klass, client=b.client)
                 task.append(m)
             m.seconds += b.seconds
             m.sessions += b.sessions
@@ -136,7 +164,9 @@ def work_output(actions) -> dict:
         objects.setdefault(a.source, set()).add(a.object_id)
     out = {src: {**dict(c), "objects": len(objects[src])} for src, c in counts.items()}
     if "gmail" in out:
-        out["gmail"]["threads"] = out["gmail"].pop("objects")
+        out["gmail"].pop("objects")
+        # Threads handled = threads you sent in; received mail is counted separately.
+        out["gmail"]["threads"] = len({a.object_id for a in actions if a.source == "gmail" and a.action != "received"})
     if "mantis" in out:
         out["mantis"]["tickets"] = out["mantis"].pop("objects")
     if "drive" in out:

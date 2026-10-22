@@ -13,9 +13,11 @@ import { addDays, BUCKET_LABEL, BUCKETS, bucketColor, hm, localDate } from "@/li
 
 type Row = { id: number; name: string; email: string; breakdown: Record<string, number>; worked_s: number; overtime_s: number;
   deep_focus_s: number; meeting_pct: number; tickets: number; emails: number; dsr: string | null; ai_status: string | null;
-  last_upload: string | null };
+  last_upload: string | null; clients: { client: string; total_s: number }[] };
+type TeamClient = { client: string; total_s: number; people: number; emails_sent: number; tickets: number };
 type TeamDay = { team: { id: number; name: string; shift_start: string; shift_end: string; break_minutes: number }; day: string; rows: Row[];
-  summary: { content: { summary: string; risks: string[]; suggestions: string[]; ai_status: string }; generated_at: string } | null };
+  summary: { content: { summary: string; risks: string[]; suggestions: string[]; ai_status: string }; generated_at: string } | null;
+  by_client: TeamClient[] };
 
 const REPORT_LABEL: Record<string, string> = { draft: "Draft (not submitted)", submitted: "Submitted", sent: "Sent to you" };
 
@@ -101,7 +103,7 @@ function TeamView() {
             <table className="w-full text-left text-sm">
               <thead className="border-b border-line text-muted">
                 <tr>
-                  {["Person", "Shift", "Worked", "Productive", "Meetings", "Deep focus", "Outside shift", "Tickets", "Emails", "Report"].map((h) =>
+                  {["Person", "Shift", "Worked", "Productive", "Top clients", "Meetings", "Deep focus", "Outside shift", "Tickets", "Emails", "Report"].map((h) =>
                     <th key={h} className="whitespace-nowrap px-4 py-2 font-medium">{h}</th>)}
                 </tr>
               </thead>
@@ -115,6 +117,7 @@ function TeamView() {
                     <td className="px-4 py-2"><MiniBar bd={r.breakdown} /></td>
                     <td className="px-4 py-2">{hm(r.worked_s)}</td>
                     <td className="px-4 py-2">{hm(r.breakdown.productive)}</td>
+                    <td className="px-4 py-2 text-xs">{r.clients.length ? r.clients.map((c) => `${c.client} ${hm(c.total_s)}`).join(" · ") : <span className="text-muted">—</span>}</td>
                     <td className="px-4 py-2">{hm(r.breakdown.meeting)} <span className="text-xs text-muted">{r.meeting_pct.toFixed(0)}%</span></td>
                     <td className="px-4 py-2">{hm(r.deep_focus_s)}</td>
                     <td className={`px-4 py-2 ${r.overtime_s >= 3600 ? "font-semibold" : ""}`}>{hm(r.overtime_s)}</td>
@@ -129,6 +132,34 @@ function TeamView() {
               {BUCKETS.map((b) => <li key={b} className="flex items-center gap-1.5"><Swatch color={bucketColor(b)} />{BUCKET_LABEL[b]}</li>)}
             </ul>
           </section>
+
+          {data.by_client.length > 0 && (
+            <section className="card space-y-3" aria-labelledby="h-team-clients">
+              <h2 id="h-team-clients" className="text-lg font-semibold">Time by client</h2>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm tabular-nums">
+                  <thead className="text-muted"><tr>{["Client", "Time", "People", "Tickets", "Emails sent"].map((h) =>
+                    <th key={h} className="py-1 pr-4 font-medium">{h}</th>)}</tr></thead>
+                  <tbody className="divide-y divide-line">
+                    {data.by_client.map((c) => {
+                      const max = data.by_client[0].total_s || 1;
+                      return (
+                        <tr key={c.client}>
+                          <td className="py-1.5 pr-4 font-medium">{c.client}</td>
+                          <td className="py-1.5 pr-4"><span className="flex items-center gap-2">
+                            <span aria-hidden className="h-2 rounded-full" style={{ width: `${Math.max(4, (120 * c.total_s) / max)}px`, background: "var(--b-productive)" }} />
+                            {hm(c.total_s)}</span></td>
+                          <td className="py-1.5 pr-4">{c.people}</td>
+                          <td className="py-1.5 pr-4">{c.tickets}</td>
+                          <td className="py-1.5 pr-4">{c.emails_sent}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
 
           <div className="grid gap-6 md:grid-cols-2">
             <section className="card space-y-3" aria-labelledby="h-team-sum">

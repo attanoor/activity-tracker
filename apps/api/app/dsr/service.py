@@ -13,9 +13,11 @@ from sqlalchemy.orm import Session
 from app.ai import levels
 from app.ai.llm import get_llm
 from app.analysis.engine import MeetingIn, SessionIn, Shift, analyse, compare, fmt_hm
+from app.clients.attribution import by_client
+from app.clients.resolve import Resolver
 from app.dsr.blocks import build_blocks, work_output
-from app.models import (ActivitySession, CalendarEvent, Category, DayAnalysis, DsrReport, SuggestionFeedback, Team,
-                        User, WorkAction)
+from app.models import (ActivitySession, CalendarEvent, Category, DayAnalysis, DsrReport, ManualEntry,
+                        SuggestionFeedback, Team, User, WorkAction)
 from app.pipeline.rebuild import rebuild_day, user_timezone
 
 SECTION_OF = {"ticket": "tickets", "email_thread": "email", "doc": "docs", "meeting": "meetings", "block": "focus"}
@@ -44,10 +46,18 @@ def compute_day(db: Session, user: User, day: date, rebuild: bool = True) -> dic
                         .order_by(CalendarEvent.started_at)).all()
     actions = db.scalars(select(WorkAction).where(WorkAction.user_id == user.id, WorkAction.day == day)
                          .order_by(WorkAction.at)).all()
+    manual = db.scalars(select(ManualEntry).where(ManualEntry.user_id == user.id, ManualEntry.day == day)
+                        .order_by(ManualEntry.started_at)).all()
+    resolver = Resolver(db)
+    # Logged off-PC work counts like tracked activity: calls and meetings as meetings, the rest as productive.
+    manual_in = [SessionIn(m.started_at, m.ended_at, "meeting" if m.kind in ("call", "meeting") else "productive",
+                           None, None, m.title, "Manual entry") for m in manual]
     analysis = analyse(day, tz,
-                       [SessionIn(s.started_at, s.ended_at, s.klass, s.app, s.domain, s.title, s.category) for s in sessions],
+                       [SessionIn(s.started_at, s.ended_at, s.klass, s.app, s.domain, s.title, s.category) for s in sessions]
+                       + manual_in,
                        [MeetingIn(e.id, e.title, e.started_at, e.ended_at, e.attendees, e.has_video, e.attended) for e in events],
                        shift_for(db, user))
+    analysis["by_client"] = by_client(resolver, sessions, events, actions, manual, analysis["meetings"])
     output = work_output(actions)
     if output:
         hours = analysis["breakdown"]["productive"] / 3600
@@ -57,9 +67,16 @@ def compute_day(db: Session, user: User, day: date, rebuild: bool = True) -> dic
     row.data = analysis
     db.add(row)
     db.commit()
-    blocks, nonwork = build_blocks(sessions)
+    blocks, nonwork = build_blocks(sessions, resolver.names)
+    for i, m in enumerate(manual, 1):
+        secs = int((m.ended_at - m.started_at).total_seconds())
+        blocks.append({"id": f"m{i}", "key": f"manual:{m.id}", "kind": "manual", "label": m.title,
+                       "category": "Manual entry", "klass": "meeting" if m.kind in ("call", "meeting") else "productive",
+                       "seconds": secs, "minutes": round(secs / 60), "sessions": 1, "first": m.started_at.isoformat(),
+                       "last": m.ended_at.isoformat(), "ticket_id": None, "client": resolver.name(m.client_id),
+                       "titles": [m.note] if m.note else [], "sections": []})
     return {"tz": tz, "sessions": sessions, "events": events, "actions": actions, "analysis": analysis,
-            "blocks": blocks, "nonwork": nonwork, "work_output": output}
+            "blocks": blocks, "nonwork": nonwork, "work_output": output, "manual": manual, "resolver": resolver}
 
 
 def comparison(db: Session, user: User, day: date, analysis: dict) -> dict:
@@ -233,9 +250,12 @@ def standard_tasks(d: dict, sections: dict) -> list[dict]:
         g = d["work_output"].get("gmail", {})
         sent = g.get("replied", 0) + g.get("new_thread", 0)
         code_text = ", ".join(f"{b['label']} {fmt_hm(b['seconds'])}" for b in by["communication"][:4]) + "."
+        per_client = [r for r in a.get("by_client", {}).get("rows", []) if r["client_id"] and (r["email_s"] or r["emails_sent"])]
+        client_text = "; ".join(f"{r['client']} {fmt_hm(r['email_s'])} ({r['emails_sent']} sent)" for r in per_client[:6])
+        summary = sections.get("email") or (f"{sent} emails sent. {code_text}" if sent else code_text)
         out.append({"title": "Email and chat", "block_ids": [b["id"] for b in by["communication"]], "seconds": comm_s,
                     "category": "Email", "status": "done",
-                    "summary": sections.get("email") or (f"{sent} emails sent. {code_text}" if sent else code_text)})
+                    "summary": (f"By client: {client_text}. " if client_text else "") + summary})
     neutral_s = sum(b["seconds"] for b in by["neutral"])
     if neutral_s >= STANDARD_MIN_S:
         names = ", ".join(b["label"] for b in sorted(by["neutral"], key=lambda b: -b["seconds"])[:4])
@@ -285,7 +305,10 @@ def generate(db: Session, user: User, day: date, force: bool = False) -> DsrRepo
         "person": user.name, "day": day.isoformat(),
         "all_block_ids": [b["id"] for b in work_blocks],
         "blocks": [{"id": b["id"], "label": b["label"], "kind": b["kind"], "category": b["category"],
+                    "client": b.get("client"), "sections": b.get("sections", [])[:3],
                     "time": fmt_hm(b["seconds"]), "ticket": b["ticket_id"], "titles": b["titles"][:3]} for b in work_blocks],
+        "time_by_client": [{"client": r["client"], "time": fmt_hm(r["total_s"])}
+                           for r in a.get("by_client", {}).get("rows", [])[:8]],
         "sections": {k: v for k, v in sections.items() if v},
         "meetings": [{"title": m["title"], "duration": fmt_hm(m["duration_s"]), "status": m["status"]} for m in a["meetings"]],
         "work_output": out, "analysis": analysis_brief,
@@ -315,11 +338,14 @@ def generate(db: Session, user: User, day: date, force: bool = False) -> DsrRepo
     tasks = []
     for t in report["tasks"] + standard_tasks(d, sections):
         bl = [block_by_id[b] for b in t["block_ids"] if b in block_by_id]
+        main = max(bl, key=lambda b: b["seconds"]) if bl else None
         tasks.append({**t, "id": f"t{len(tasks) + 1}",
                       "seconds": t.get("seconds") or sum(b["seconds"] for b in bl),
-                      "category": t.get("category") or (max(bl, key=lambda b: b["seconds"])["category"] if bl else None),
+                      "client": t.get("client") or (main.get("client") if main else None),
+                      "category": t.get("category") or (main["category"] if main else None),
                       "refs": sorted({b["ticket_id"] for b in bl if b.get("ticket_id")})})
     content = {
+        "time_by_client": a.get("by_client", {}).get("rows", []),
         "tasks": tasks, "highlights": report["highlights"], "blockers": report["blockers"],
         "tomorrow": report["tomorrow"], "insights": report["insights"], "suggestions": suggestions,
         "sections": sections, "items": item_summaries,

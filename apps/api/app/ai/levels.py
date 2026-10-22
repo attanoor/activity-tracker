@@ -8,7 +8,7 @@ from app.ai import guards, runner
 from app.analysis.engine import fmt_hm
 
 STATUSES = ("done", "in_progress", "blocked")
-SMALL_LEFTOVER_S = 20 * 60
+SMALL_LEFTOVER_S = 30 * 60
 METRICS = ("productive", "meeting", "communication", "non_work", "idle", "deep_focus", "switches_per_hour",
            "meeting_load", "long_low_value", "communication_checks", "overtime", "top_targets")
 
@@ -121,7 +121,9 @@ DAY_SYSTEM = (
     "You write a person's Daily Status Report (DSR) from their tracked day. The BLOCKS are their productive work "
     "(email, chat, meetings and admin are reported separately, but you may use the sections for context). Group "
     "the BLOCKS into a few meaningful TASKS (usually 2-6). Every block id must be used in exactly one task. Name "
-    "tasks after the ticket, document, project or repository they concern. Each task summary says what was done "
+    "tasks after the ticket, document, project or repository they concern; when a block has a client, start the "
+    "task title with the client name, e.g. 'River Club: billing setup', and keep different clients in different "
+    "tasks. Use the page sections to say what part of the system was worked on. Each task summary says what was done "
     "(from the titles, ticket actions and sections) in one or two sentences, without repeating the task's time, "
     "which is shown separately. Status is done, in_progress or blocked. "
     "Highlights: the 2-4 most notable results. Blockers: only real ones visible in the facts (else empty). "
@@ -342,3 +344,24 @@ def suggest_rule(db, llm, model, domain: str, titles: list[str], categories: lis
     out, status = runner.run(db, llm, model, "rule", RULE_SYSTEM, payload, '{"category": "...", "reason": "..."}',
                              validate, lambda: {})
     return out if status == "ok" else None
+
+
+# --- client names ---------------------------------------------------------------------------------------
+CLIENT_SYSTEM = ("You name a customer (usually a golf, country or social club) from a web or email domain and the "
+                 "names or page titles seen with it. If it is clearly one of the KNOWN clients, return that exact "
+                 "name. Otherwise return the club's proper name (e.g. 'River Oaks Country Club'). If it is not a "
+                 "customer (a tool, a public site), return an empty name.")
+
+
+def suggest_client_name(db, llm, model, domain: str, hints: list[str], known: list[str]) -> str | None:
+    payload = {"domain": domain, "seen_with": hints[:6], "known_clients": known[:300]}
+
+    def validate(data):
+        name = str(data.get("name") or "").strip()
+        if len(name) > 120:
+            return {}, ["name must be at most 120 characters"]
+        return {"name": name}, []
+
+    out, status = runner.run(db, llm, model, "client", CLIENT_SYSTEM, payload, '{"name": "..."}', validate,
+                             lambda: {"name": ""})
+    return out.get("name") or None

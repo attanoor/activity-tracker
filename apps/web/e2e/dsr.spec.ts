@@ -15,7 +15,8 @@ test("a person reviews their day, edits the AI report and submits it", async ({ 
   await expect(page.getByRole("img", { name: /Timeline from/ })).toBeVisible();
   await expect(page.getByText("Longest focus block")).toBeVisible();
 
-  await page.getByRole("button", { name: "Generate report" }).click();
+  // The day was reopened by the manager (it is past the edit deadline), so a placeholder report already exists.
+  await page.getByRole("button", { name: /^(Generate report|Regenerate)$/ }).click();
   const firstTitle = page.locator("input[id^='t-t']").first();
   await expect(firstTitle).toBeVisible({ timeout: 280_000 });
   await expect(page.getByText(/Written by (AI|the tracker)/)).toBeVisible();
@@ -69,6 +70,30 @@ test("people cannot open someone else's day", async ({ page }) => {
   expect(r.status()).toBe(404);
   await page.goto("/team");
   await expect(page.getByText("The team view is for managers and admins.")).toBeVisible();
+});
+
+test("time is shown per client, and an admin manages clients", async ({ page }) => {
+  await signIn(page, data["e2e.resource"]);
+  await page.goto(`/day?d=${data.day}`);
+  const byClient = page.getByRole("region", { name: "Time by client" });
+  await expect(byClient).toBeVisible();
+  await expect(byClient.getByText("River Oaks Country Club").first()).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Work away from the PC" })).toBeVisible();
+  await page.getByRole("button", { name: "Sign out" }).click();
+
+  await signIn(page, data["e2e.admin"]);
+  await page.goto("/admin?tab=clients");
+  const name = `E2E Club ${Date.now()}`;
+  await page.getByLabel(/Paste the club list/).fill(`${name}, e2e-${Date.now()}.demo`);
+  await page.getByRole("button", { name: "Import" }).click();
+  await expect(page.getByText(/1 clubs read, 1 new, 1 websites/)).toBeVisible();
+  await page.getByLabel("Filter clients").fill(name);
+  // Scope to the confirmed list: the name also appears as an option in the suggestions' "Same as…" pickers.
+  const confirmed = page.getByRole("region", { name: /^Clients \(/ });
+  const item = confirmed.getByRole("listitem").filter({ hasText: name }).first();
+  await expect(item).toContainText("Website:");
+  await item.getByRole("button", { name: "Remove", exact: true }).click();
+  await expect(confirmed.getByText(name, { exact: true })).toHaveCount(0);
 });
 
 test("an admin manages category rules and sees the integrations", async ({ page }) => {

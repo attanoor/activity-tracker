@@ -14,6 +14,7 @@ from tracker_agent.core import BROWSERS, Tab
 EXTENSION_ID = "odcdjagpgncdkaadeilapklolefhpeoc"
 ALLOWED_ORIGINS = {f"chrome-extension://{EXTENSION_ID}"}
 MAX_BODY = 16 * 1024
+MAX_CONTEXT = 2048
 
 
 class TabStore:
@@ -33,7 +34,7 @@ class TabStore:
             return dict(self._tabs)
 
 
-def make_handler(tabs: TabStore, status: Callable[[], dict]):
+def make_handler(tabs: TabStore, status: Callable[[], dict], page_rules: Callable[[], dict]):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):  # keep URLs out of any console/log
             pass
@@ -60,6 +61,8 @@ def make_handler(tabs: TabStore, status: Callable[[], dict]):
                 return self._send(403, {"error": "origin"})
             if self.path == "/status":
                 return self._send(200, status())
+            if self.path == "/config":
+                return self._send(200, page_rules())
             self._send(404)
 
         def do_POST(self):
@@ -77,17 +80,23 @@ def make_handler(tabs: TabStore, status: Callable[[], dict]):
                 return self._send(400)
             if browser not in BROWSERS:
                 return self._send(400, {"error": "browser"})
-            url, title = body.get("url"), body.get("title")
+            url, title, context = body.get("url"), body.get("title"), body.get("context")
+            if not isinstance(context, dict) or len(json.dumps(context)) > MAX_CONTEXT:
+                context = None
             if body.get("incognito") or not isinstance(url, str):
                 tabs.set(browser, None)  # nothing recorded beyond the window itself
             else:
-                tabs.set(browser, Tab(url=url[:4000], title=str(title or "")[:2000]))
+                tabs.set(browser, Tab(url=url[:4000], title=str(title or "")[:2000], context=context))
             self._send(200, status())
 
     return Handler
 
 
-def start(port: int, tabs: TabStore, status: Callable[[], dict]) -> ThreadingHTTPServer:
-    server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(tabs, status))
+DEFAULT_RULES = {"page_reading": True, "allow": [], "skip": []}
+
+
+def start(port: int, tabs: TabStore, status: Callable[[], dict],
+          page_rules: Callable[[], dict] = lambda: DEFAULT_RULES) -> ThreadingHTTPServer:
+    server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(tabs, status, page_rules))
     threading.Thread(target=server.serve_forever, name="local-server", daemon=True).start()
     return server

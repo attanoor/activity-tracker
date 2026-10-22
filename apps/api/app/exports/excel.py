@@ -13,7 +13,7 @@ from openpyxl.utils.cell import coordinate_from_string, column_index_from_string
 from openpyxl.utils.exceptions import CellCoordinatesException
 
 from app.analysis.engine import BUCKETS
-from app.exports.bundle import Bundle, day_fields, hours, local, task_fields
+from app.exports.bundle import Bundle, client_rows, day_fields, hours, local, task_fields
 
 HEAD = Font(bold=True, color="FFFFFF")
 HEAD_FILL = PatternFill("solid", fgColor="12805A")
@@ -44,16 +44,32 @@ def dsr_workbook(bundles: list[Bundle], team_name: str | None = None) -> bytes:
         for t in b.content.get("tasks", []):
             tf = task_fields(t)
             rows.append([b.day, b.user.name, tf["task"], tf["task_summary"], tf["hours"], tf["task_status"],
-                         tf["category"], tf["tickets"]])
+                         tf["category"], tf["tickets"], tf["task_client"]])
         rows.append([b.day, b.user.name, "Highlights", f["highlights"], None, None, None, None])
         rows.append([b.day, b.user.name, "Blockers", f["blockers"] or "None", None, None, None, None])
         rows.append([b.day, b.user.name, "Tomorrow", f["tomorrow"], None, None, None, None])
         rows.append([b.day, b.user.name, "Insights (AI)", f["ai_summary"], None, None, None, None])
         rows.append([b.day, b.user.name, "Suggestions (AI)", f["ai_suggestions"], None, None, None, None])
-    _table(ws, ["Date", "Person", "Task", "Summary", "Hours", "Status", "Category", "Tickets"], rows,
-           [12, 20, 40, 70, 8, 12, 18, 14])
+    _table(ws, ["Date", "Person", "Task", "Summary", "Hours", "Status", "Category", "Tickets", "Client"], rows,
+           [12, 20, 40, 70, 8, 12, 18, 14, 22])
     for row in ws.iter_rows(min_row=2):
         row[3].alignment = WRAP
+
+    ws = wb.create_sheet("By Client")
+    by_client = []
+    for b in bundles:
+        for r in client_rows(b):
+            ta = r["ticket_actions"]
+            by_client.append([b.day, b.user.name, r["client"], hours(r["total_s"]), hours(r["web_s"]), hours(r["email_s"]),
+                              hours(r["tickets_s"]), hours(r["meetings_s"]), hours(r["manual_s"]), r["emails_sent"],
+                              r["emails_received"], r["tickets"], ta.get("reported", 0), ta.get("responded", 0),
+                              ta.get("resolved", 0) + ta.get("closed", 0),
+                              ", ".join(f"{k} {v}" for k, v in sorted(r["issue_types"].items())),
+                              "; ".join(r["top_sections"])])
+    _table(ws, ["Date", "Person", "Client", "Total h", "Website/backoffice h", "Email h", "Tickets h", "Meetings h",
+                "Logged off-PC h", "Emails sent", "Emails received", "Tickets touched", "Reported", "Responses",
+                "Resolved", "Issue types reported", "Main sections"], by_client,
+           [12, 20, 24, 9, 12, 9, 9, 10, 10, 10, 10, 10, 9, 9, 9, 24, 40])
 
     ws = wb.create_sheet("Work Output")
     counts, actions = [], []

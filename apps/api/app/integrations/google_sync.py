@@ -47,9 +47,12 @@ def parse_events(items: list[dict], email: str) -> list[dict]:
         if me and me.get("responseStatus") == "declined":
             continue
         has_video = bool(e.get("hangoutLink") or e.get("conferenceData"))
+        domains = sorted({a["email"].rsplit("@", 1)[1].lower() for a in e.get("attendees", [])
+                          if "@" in a.get("email", "") and not a.get("self")})
         out.append({"ext_id": e["id"], "title": e.get("summary", "(no title)"), "started_at": _ts(start["dateTime"]),
                     "ended_at": _ts(end["dateTime"]), "attendees": len(e.get("attendees", [])),
-                    "has_video": has_video, "organizer": e.get("organizer", {}).get("email")})
+                    "has_video": has_video, "organizer": e.get("organizer", {}).get("email"),
+                    "attendee_domains": domains})
     return out
 
 
@@ -69,7 +72,8 @@ def sync_calendar(db: Session, user: User, day: date, tz: str, token: str, http:
         seen.add(ev["ext_id"])
         stmt = insert(CalendarEvent).values(user_id=user.id, day=day, **ev).on_conflict_do_update(
             constraint="uq_calendar_events_user_ext",
-            set_={k: ev[k] for k in ("title", "started_at", "ended_at", "attendees", "has_video", "organizer")} | {"day": day})
+            set_={k: ev[k] for k in ("title", "started_at", "ended_at", "attendees", "has_video", "organizer",
+                                     "attendee_domains")} | {"day": day})
         db.execute(stmt)
     # Events deleted or declined since the last sync disappear from the day.
     for old in db.scalars(select(CalendarEvent).where(CalendarEvent.user_id == user.id, CalendarEvent.day == day)):
@@ -80,28 +84,41 @@ def sync_calendar(db: Session, user: User, day: date, tz: str, token: str, http:
 
 
 # --- Gmail (headers only) ---------------------------------------------------------------------------------
-def sync_gmail(db: Session, user: User, day: date, tz: str, token: str, http: httpx.Client) -> int:
-    lo, hi = day_bounds(day, tz)
-    q = f"in:sent after:{int(lo.timestamp())} before:{int(hi.timestamp())}"
+def _people(value: str) -> list[dict]:
+    return [{"email": a.lower(), "name": n.strip()} for n, a in getaddresses([value or ""]) if "@" in a]
+
+
+def _message_ids(http: httpx.Client, token: str, q: str) -> list[str]:
     ids, page = [], None
     while True:
         data = _get(http, token, f"{GMAIL}/messages", q=q, maxResults=500, **({"pageToken": page} if page else {}))
         ids += [m["id"] for m in data.get("messages", [])]
         page = data.get("nextPageToken")
         if not page:
-            break
+            return ids
+
+
+def sync_gmail(db: Session, user: User, day: date, tz: str, token: str, http: httpx.Client) -> int:
+    """Sent mail counts as output (replied / new_thread). Received mail is kept too (action 'received'), headers
+    only, so threads can be tied to clients and time on them measured."""
+    lo, hi = day_bounds(day, tz)
+    span = f"after:{int(lo.timestamp())} before:{int(hi.timestamp())}"
     n = 0
-    for mid in ids:
-        m = _get(http, token, f"{GMAIL}/messages/{mid}", format="metadata",
-                 metadataHeaders=["Subject", "To", "Cc", "In-Reply-To"])
-        headers = {h["name"].lower(): h["value"] for h in m.get("payload", {}).get("headers", [])}
-        at = datetime.fromtimestamp(int(m["internalDate"]) / 1000, UTC)
-        recipients = [a for _, a in getaddresses([headers.get("to", ""), headers.get("cc", "")]) if "@" in a]
-        reply = bool(headers.get("in-reply-to"))
-        n += _add_action(db, f"gmail:{mid}", user.id, _local_day(at, tz), "gmail", "replied" if reply else "new_thread",
-                         m["threadId"], headers.get("subject", "(no subject)"), at,
-                         {"to_domains": sorted({a.split("@")[1].lower() for a in recipients}),
-                          "recipients": len(recipients), "snippet": m.get("snippet", "")[:300]})
+    for q, sent in ((f"in:sent {span}", True), (f"-in:sent -in:drafts -in:chats {span}", False)):
+        for mid in _message_ids(http, token, q):
+            m = _get(http, token, f"{GMAIL}/messages/{mid}", format="metadata",
+                     metadataHeaders=["Subject", "From", "To", "Cc", "In-Reply-To"])
+            headers = {h["name"].lower(): h["value"] for h in m.get("payload", {}).get("headers", [])}
+            at = datetime.fromtimestamp(int(m["internalDate"]) / 1000, UTC)
+            to, cc = _people(headers.get("to", "")), _people(headers.get("cc", ""))
+            recipients = [p["email"] for p in to + cc]
+            action = ("replied" if headers.get("in-reply-to") else "new_thread") if sent else "received"
+            meta = {"from": _people(headers.get("from", "")), "to": to, "cc": cc,
+                    "to_domains": sorted({a.split("@")[1] for a in recipients}), "recipients": len(recipients)}
+            if sent:
+                meta["snippet"] = m.get("snippet", "")[:300]
+            n += _add_action(db, f"gmail:{mid}", user.id, _local_day(at, tz), "gmail", action,
+                             m["threadId"], headers.get("subject", "(no subject)"), at, meta)
     db.commit()
     return n
 

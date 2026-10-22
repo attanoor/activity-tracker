@@ -70,6 +70,17 @@ def dsr_pdf(b: Bundle, for_manager: bool = False) -> bytes:
         story.append(p("Work output", h2))
         story += [p(f"• {x}") for x in wo]
 
+    named = [r for r in b.analysis.get("by_client", {}).get("rows", []) if r["total_s"]]
+    if named:
+        story.append(p("Time by client", h2))
+        rows = [["Client", "Total", "Website/backoffice", "Email", "Tickets", "Meetings", "Emails sent"]] + [
+            [r["client"], fmt_hm(r["total_s"]), fmt_hm(r["web_s"]), fmt_hm(r["email_s"]), fmt_hm(r["tickets_s"]),
+             fmt_hm(r["meetings_s"] + r["manual_s"]), str(r["emails_sent"])] for r in named]
+        t = Table(rows, colWidths=[46 * mm, 18 * mm, 30 * mm, 18 * mm, 18 * mm, 22 * mm, 22 * mm], repeatRows=1)
+        t.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), GREEN), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                               ("FONTSIZE", (0, 0), (-1, -1), 8.5), ("LINEBELOW", (0, 1), (-1, -1), 0.5, LINE)]))
+        story.append(t)
+
     story.append(p("Where the shift went", h2))
     bd = a["breakdown"]
     t = Table([[BUCKET_LABELS[k], fmt_hm(v), f"{100 * v / a['shift']['seconds']:.0f}%"] for k, v in bd.items() if v],

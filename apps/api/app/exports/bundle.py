@@ -65,13 +65,26 @@ def day_fields(b: Bundle) -> dict:
         "highlights": "\n".join(b.content.get("highlights", [])), "blockers": "\n".join(b.content.get("blockers", [])),
         "tomorrow": "\n".join(b.content.get("tomorrow", [])), "remarks": b.content.get("insights", ""),
         "ai_summary": b.content.get("insights", ""),
+        **client_fields(b),
         "ai_suggestions": "\n".join(s["text"] for s in b.content.get("suggestions", [])),
     }
+
+
+def client_rows(b: Bundle) -> list[dict]:
+    return b.analysis.get("by_client", {}).get("rows", [])
+
+
+def client_fields(b: Bundle) -> dict:
+    named = [r for r in client_rows(b) if r["client_id"] is not None]
+    top = named[0] if named else None
+    return {"client": top["client"] if top else "", "client_hours": hours(top["total_s"]) if top else 0,
+            "clients_summary": "; ".join(f"{r['client']} {hours(r['total_s'])}h" for r in named)}
 
 
 def task_fields(t: dict) -> dict:
     """Values for template fields repeated per task row."""
     return {"task": t["title"], "task_summary": t.get("summary", ""), "hours": hours(t["seconds"]),
+            "task_client": t.get("client") or "",
             "minutes": round(t["seconds"] / 60), "task_status": t["status"].replace("_", " "),
             "category": t.get("category") or "", "tickets": ", ".join(f"#{r}" for r in t.get("refs", []))}
 
@@ -90,5 +103,8 @@ FIELD_HELP = {
     "email_threads": "Email threads", "docs_created": "Docs created", "docs_edited": "Docs edited",
     "highlights": "Highlights", "blockers": "Blockers", "tomorrow": "Plan for tomorrow", "remarks": "AI insights",
     "ai_summary": "AI summary", "ai_suggestions": "AI suggestions",
+    "client": "Main client of the day", "client_hours": "Hours for the main client",
+    "clients_summary": "Every client with hours, e.g. 'River Club 2.5h; Oak Hills 0.75h'",
+    "task_client": "Client of the task (one row per task)",
 }
-TASK_FIELD_NAMES = {"task", "task_summary", "hours", "minutes", "task_status", "category", "tickets"}
+TASK_FIELD_NAMES = {"task", "task_summary", "hours", "minutes", "task_status", "category", "tickets", "task_client"}

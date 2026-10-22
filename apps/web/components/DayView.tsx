@@ -4,6 +4,9 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
 import Heading from "@/components/Heading";
+import ManualEntries from "@/components/ManualEntries";
+import { useUser } from "@/components/Shell";
+import ClientBars, { type ClientRow } from "@/components/charts/ClientBars";
 import ShiftBar from "@/components/charts/ShiftBar";
 import StackedColumns from "@/components/charts/StackedColumns";
 import Timeline from "@/components/charts/Timeline";
@@ -11,12 +14,14 @@ import { TableView } from "@/components/charts/Tooltip";
 import { api } from "@/lib/api";
 import { addDays, BUCKET_LABEL, bucketOf, clock, hm, localDate } from "@/lib/viz";
 
-type Task = { id: string; title: string; summary: string; status: string; seconds: number; category: string | null; refs: string[] };
+type Task = { id: string; title: string; summary: string; status: string; seconds: number; category: string | null; refs: string[];
+  client?: string | null };
 type Content = { tasks: Task[]; highlights: string[]; blockers: string[]; tomorrow: string[]; insights: string;
   suggestions?: { text: string; metric: string }[]; sections: Record<string, string>; meetings: Meeting[];
   work_output: Record<string, Record<string, number>> };
 type Dsr = { id: number; status: string; ai_status: string; model: string; content: Content; edited: boolean;
-  generated_at: string; submitted_at: string | null; sent_at: string | null };
+  generated_at: string; submitted_at: string | null; sent_at: string | null; editable?: boolean; locked_reason?: string;
+  edit_deadline?: string; reopened?: boolean };
 type Meeting = { id: number; title: string; start: string; end: string; duration_s: number; status: string; attendees?: number };
 type Overview = {
   user: { id: number; name: string }; day: string; tz: string;
@@ -32,6 +37,7 @@ type Overview = {
     switching: { switches: number; per_hour: number }; communication_checks: Record<string, number>;
     meetings: Meeting[]; adhoc_calls: { start: string; end: string; duration_s: number }[];
     meeting_load: { count: number; seconds: number; pct_of_shift: number; back_to_back: number; short_gaps: number; short_gap_s: number };
+    by_client?: { rows: ClientRow[]; total_s: number; client_s: number };
   };
   compare: Record<string, { value: number; avg_7d: number | null; team_avg: number | null; flag: { vs: string; direction: string } | null }>;
   actions: { source: string; action: string; object_id: string; at: string; title: string }[];
@@ -44,6 +50,12 @@ type Overview = {
 const STATUS_LABEL: Record<string, string> = { done: "Done", in_progress: "In progress", blocked: "Blocked" };
 const MEETING_LABEL: Record<string, string> = { attended: "Attended", confirmed: "Confirmed by you", multitasking: "Attended, other work alongside",
   unclear: "Unclear: busy with other work", not_attended: "Not attended" };
+
+/** Older or placeholder reports may miss fields; the editor always gets every list. */
+function withDefaults(c: Partial<Content>): Content {
+  return { tasks: [], highlights: [], blockers: [], tomorrow: [], insights: "", suggestions: [], sections: {}, meetings: [],
+    work_output: {}, ...c } as Content;
+}
 
 function Tile({ label, value, note }: { label: string; value: string; note?: string }) {
   return (
@@ -94,6 +106,7 @@ function WorkOutput({ wo }: { wo: Overview["work_output"] }) {
 }
 
 export default function DayView({ personId }: { personId?: number }) {
+  const me = useUser();
   const router = useRouter();
   const params = useSearchParams();
   const own = personId === undefined;
@@ -111,7 +124,7 @@ export default function DayView({ personId }: { personId?: number }) {
     try {
       const o = await api<Overview>(`${own ? "/me" : `/people/${personId}`}/overview/${day}`);
       setData(o);
-      setDraft(o.dsr ? structuredClone(o.dsr.content) : null);
+      setDraft(o.dsr ? withDefaults(structuredClone(o.dsr.content)) : null);
       if (o.generation_error) setError(o.generation_error);
       return o;
     } catch (e) {
@@ -153,8 +166,9 @@ export default function DayView({ personId }: { personId?: number }) {
 
   const a = data.analysis, bd = a.breakdown, tz = data.tz;
   const dsr = data.dsr;
-  const editable = own && dsr?.status === "draft" && !preview;
-  const changed = dsr && draft && JSON.stringify(draft) !== JSON.stringify(dsr.content);
+  const editable = own && dsr?.status === "draft" && dsr.editable !== false && !preview;
+  const clientRows = a.by_client?.rows ?? [];
+  const changed = dsr && draft && JSON.stringify(draft) !== JSON.stringify(withDefaults(dsr.content));
   const ot = a.overtime.before_s + a.overtime.after_s;
   const hourCols = a.hours.map((h) => ({ key: String(h.hour), label: `${String(h.hour).padStart(2, "0")}`, values: h, muted: !h.in_shift }));
 
@@ -191,6 +205,20 @@ export default function DayView({ personId }: { personId?: number }) {
         <Heading id="h-shift">Where the {hm(a.shift.seconds)} went</Heading>
         <ShiftBar breakdown={bd} shiftSeconds={a.shift.seconds} />
       </section>
+
+      {clientRows.length > 0 && (
+        <section className="card space-y-3" aria-labelledby="h-clients">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <Heading id="h-clients">Time by client</Heading>
+            <p className="text-xs text-muted">{hm(a.by_client!.client_s)} for clients of {hm(a.by_client!.total_s)} worked</p>
+          </div>
+          <ClientBars rows={clientRows} />
+          {clientRows.some((r) => r.client_id === null) && (
+            <p className="text-xs text-muted">&quot;No client&quot; is internal work, or a site or email the tracker doesn&apos;t know yet.
+              {me.role === "admin" ? " Confirm new clients in Admin → Clients." : " Your admin confirms new clients."}</p>
+          )}
+        </section>
+      )}
 
       <section className="card space-y-3" aria-labelledby="h-timeline">
         <Heading id="h-timeline">Timeline</Heading>
@@ -277,6 +305,13 @@ export default function DayView({ personId }: { personId?: number }) {
         </section>
       </div>
 
+      {own && (
+        <section className="card space-y-3" aria-labelledby="h-manual">
+          <Heading id="h-manual">Work away from the PC</Heading>
+          <ManualEntries day={day} tz={tz} onChange={load} />
+        </section>
+      )}
+
       <section className="card space-y-3" aria-labelledby="h-output">
         <Heading id="h-output">Work output</Heading>
         <WorkOutput wo={data.work_output} />
@@ -302,7 +337,7 @@ export default function DayView({ personId }: { personId?: number }) {
             )}
           </div>
           <div className="flex flex-wrap gap-2">
-            {own && (!dsr || dsr.status === "draft") && (
+            {own && (!dsr || (dsr.status === "draft" && dsr.editable !== false)) && (
               <button className="btn-secondary" disabled={!!busy || generating}
                 onClick={() => (!changed || confirm("Regenerating replaces your edits. Continue?")) &&
                   run("generate", () => api(`/me/dsr/${day}/generate`, { method: "POST" }))}>
@@ -316,6 +351,16 @@ export default function DayView({ personId }: { personId?: number }) {
         </div>
 
         {!dsr && <p className="text-sm text-muted">{own ? "The report is drafted automatically after your shift. You can also generate it now." : "No report for this day yet."}</p>}
+        {own && dsr && dsr.editable === false && (
+          <p role="status" className="rounded-lg bg-bg p-3 text-sm">{dsr.locked_reason}</p>
+        )}
+        {own && dsr?.reopened && <p className="text-xs text-muted">Reopened by your manager: you can make changes and submit again.</p>}
+        {!own && (me.role === "manager" || me.role === "admin") && (dsr?.status !== "draft" || dsr.editable === false) && (
+          <button className="btn-secondary" disabled={!!busy}
+            onClick={() => confirm(`Reopen this day so ${data.user.name} can change it?`) &&
+              run("reopen", () => api(`/people/${personId}/dsr/${day}/reopen`, { method: "POST" }))}>
+            {busy === "reopen" ? "Reopening…" : "Reopen this day"}</button>
+        )}
 
         {dsr && draft && (
           <>
@@ -339,6 +384,7 @@ export default function DayView({ personId }: { personId?: number }) {
                           onChange={(e) => setDraft({ ...draft, tasks: draft.tasks.map((x, j) => j === i ? { ...x, status: e.target.value } : x) })}>
                           {Object.entries(STATUS_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                         </select>
+                        {t.client && <span className="self-center rounded bg-bg px-1.5 py-0.5 text-xs text-muted">{t.client}</span>}
                         <span className="self-center text-sm tabular-nums text-muted" title="Time comes from tracked activity and can't be edited">{hm(t.seconds)}</span>
                         <button className="btn-secondary px-2" aria-label={`Remove task ${t.title}`}
                           onClick={() => setDraft({ ...draft, tasks: draft.tasks.filter((_, j) => j !== i) })}>Remove</button>
@@ -350,7 +396,8 @@ export default function DayView({ personId }: { personId?: number }) {
                   ) : (
                     <div>
                       <div className="flex flex-wrap items-baseline justify-between gap-2">
-                        <p className="font-medium">{t.title}</p>
+                        <p className="font-medium">{t.title}
+                          {t.client && <span className="ml-2 rounded bg-bg px-1.5 py-0.5 text-xs font-normal text-muted">{t.client}</span>}</p>
                         <p className="text-sm text-muted">{hm(t.seconds)} · {STATUS_LABEL[t.status]}</p>
                       </div>
                       <p className="mt-1 text-sm">{t.summary}</p>

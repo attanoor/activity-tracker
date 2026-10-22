@@ -97,7 +97,8 @@ def test_exports(client, person):  # noqa: F811
     client.post(f"/me/dsr/{DAY}/generate")
     x = client.get(f"/me/dsr/{DAY}/export/xlsx")
     wb = load_workbook(io.BytesIO(x.content))
-    assert wb.sheetnames == ["DSR", "Work Output", "Meetings", "Timeline", "9-Hour Breakdown", "By App & Site", "Hourly"]
+    assert wb.sheetnames == ["DSR", "By Client", "Work Output", "Meetings", "Timeline", "9-Hour Breakdown", "By App & Site",
+                             "Hourly"]
     assert wb["9-Hour Breakdown"]._charts and wb["By App & Site"]._charts
     total = sum(r[1].value for r in wb["9-Hour Breakdown"].iter_rows(min_row=2))
     assert round(total, 1) == 9.0

@@ -22,7 +22,10 @@ DEFAULTS: dict[str, dict] = {
     "google": {"mode": "off", "client_id": "", "redirect_base": "", "calendar": True, "gmail": True, "drive": True,
                "show_subjects_to_managers": False},
     "mantis": {"enabled": False, "base_url": ""},
-    "tracking": {"retention_days": 30, "generate_after_shift_minutes": 15, "privacy_text": ""},
+    "tracking": {"retention_days": 30, "generate_after_shift_minutes": 15, "privacy_text": "",
+                 # A day's report can be edited until this many hours after the day ends (the sheet's daily lock).
+                 "edit_hours_after_day": 12},
+    "clients": {"internal_domains": [], "extra_public_domains": [], "page_reading": True, "page_allowlist": []},
     "excel": {"shared_folder": "", "master_enabled": False},
 }
 # Plain field name in an update -> encrypted field stored.

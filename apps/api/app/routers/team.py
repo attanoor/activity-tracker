@@ -42,12 +42,21 @@ def team_day(team_id: int, day: date, viewer: User = Depends(current_user), db: 
     db.commit()
     seen = dict(db.execute(select(Device.user_id, func.max(Device.last_seen_at)).where(Device.revoked_at.is_(None))
                            .group_by(Device.user_id)).all())
-    rows = []
+    rows, team_clients = [], {}
     for u in rollup.members(db, team.id):
         a = service.compute_day(db, u, day)["analysis"]
         dsr = db.scalar(select(DsrReport).where(DsrReport.user_id == u.id, DsrReport.day == day))
         bd, wo = a["breakdown"], a.get("work_output", {})
+        clients = [r for r in a.get("by_client", {}).get("rows", []) if r["client_id"] is not None]
+        for r in clients:
+            t = team_clients.setdefault(r["client"], {"client": r["client"], "total_s": 0, "people": 0, "emails_sent": 0,
+                                                      "tickets": 0})
+            t["total_s"] += r["total_s"]
+            t["people"] += 1
+            t["emails_sent"] += r["emails_sent"]
+            t["tickets"] += r["tickets"]
         rows.append({"id": u.id, "name": u.name, "email": u.email, "breakdown": bd,
+                     "clients": [{"client": r["client"], "total_s": r["total_s"]} for r in clients[:3]],
                      "worked_s": sum(bd[k] for k in ("productive", "meeting", "communication", "neutral", "non_work")),
                      "overtime_s": a["overtime"]["before_s"] + a["overtime"]["after_s"],
                      "deep_focus_s": a["focus"]["deep_s"], "meeting_pct": a["meeting_load"]["pct_of_shift"],
@@ -57,7 +66,8 @@ def team_day(team_id: int, day: date, viewer: User = Depends(current_user), db: 
                      "last_upload": seen.get(u.id)})
     return {"team": {"id": team.id, "name": team.name, "shift_start": team.shift_start, "shift_end": team.shift_end,
                      "break_minutes": team.break_minutes},
-            "day": day, "rows": rows, "summary": _summary(db, "team", team.id, "day", day)}
+            "day": day, "rows": rows, "summary": _summary(db, "team", team.id, "day", day),
+            "by_client": sorted(team_clients.values(), key=lambda x: -x["total_s"])}
 
 
 @router.post("/team/{team_id}/day/{day}/summary")

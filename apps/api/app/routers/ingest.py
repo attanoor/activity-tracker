@@ -17,6 +17,7 @@ router = APIRouter(prefix="/ingest", tags=["ingest"])
 MAX_BODY = 5 * 1024 * 1024
 MAX_EVENTS = 5000
 CLOCK_SKEW = timedelta(minutes=5)
+MAX_CONTEXT = 2048
 
 
 class EventIn(BaseModel):
@@ -28,6 +29,14 @@ class EventIn(BaseModel):
     title: str | None = Field(None, max_length=2000)
     url: str | None = Field(None, max_length=4000)
     domain: str | None = Field(None, max_length=255)
+    context: dict | None = None  # page headings, breadcrumb and club name read by the extension
+
+    @field_validator("context")
+    @classmethod
+    def _context(cls, v: dict | None) -> dict | None:
+        if v is not None and len(json.dumps(v)) > MAX_CONTEXT:
+            raise ValueError(f"context larger than {MAX_CONTEXT} bytes")
+        return v or None
 
     @field_validator("kind")
     @classmethod
@@ -77,6 +86,7 @@ async def ingest_events(request: Request, device: Device = Depends(current_devic
             # The agent already strips private/paused details; drop them here too in case an old agent didn't.
             "app": None if private else e.app, "title": None if private else e.title,
             "url": None if private else e.url, "domain": None if private else e.domain,
+            "context": None if private else e.context,
         })
     accepted = 0
     if rows:
@@ -86,3 +96,17 @@ async def ingest_events(request: Request, device: Device = Depends(current_devic
     db.commit()
     return BatchOut(accepted=accepted, duplicates=len(rows) - accepted,
                     max_seq=max((e.seq for e in batch.events), default=None))
+
+
+@router.get("/agent-config")
+def agent_config(device: Device = Depends(current_device), db: Session = Depends(get_db)):
+    """Rules the agent passes to the browser extension: whether to read pages and which sites to skip."""
+    from sqlalchemy import select
+
+    from app import settings_store
+    from app.models import Category, CategoryRule
+    cfg = settings_store.get(db, "clients")
+    skip = db.scalars(select(CategoryRule.pattern).join(Category, Category.id == CategoryRule.category_id)
+                      .where(CategoryRule.field == "domain", Category.klass == "non_work",
+                             CategoryRule.enabled.is_(True))).all()
+    return {"page_reading": cfg["page_reading"], "allow": cfg["page_allowlist"], "skip": sorted(set(skip))}

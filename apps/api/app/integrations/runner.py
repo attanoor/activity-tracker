@@ -14,6 +14,16 @@ from app.pipeline.rebuild import user_timezone
 log = logging.getLogger("integrations")
 
 
+def viewed_tickets(db: Session, since: datetime) -> list[str]:
+    from sqlalchemy import select
+
+    from app.dsr.blocks import ticket_of
+    from app.models import ActivitySession
+    rows = db.execute(select(ActivitySession.title, ActivitySession.paths, ActivitySession.domain)
+                      .where(ActivitySession.started_at >= since, ActivitySession.kind == "active")).all()
+    return sorted({t for t in (ticket_of(title, paths, domain) for title, paths, domain in rows) if t})[:200]
+
+
 def sync_google(db: Session, user: User, day: date, http: httpx.Client | None = None) -> dict:
     cfg = settings_store.get(db, "google")
     if cfg["mode"] == "off":
@@ -53,7 +63,11 @@ def sync_mantis(db: Session, since: datetime, http: httpx.Client | None = None) 
     own = http is None
     http = http or httpx.Client(timeout=30)
     try:
-        return mantis.sync(db, cfg["base_url"], since, http)
+        out = mantis.sync(db, cfg["base_url"], since, http)
+        # Tickets only viewed in the browser (no action) still need their project to find the client.
+        seen = viewed_tickets(db, since)
+        out["looked_up"] = mantis.lookup(db, cfg["base_url"], seen, http)
+        return out
     except mantis.MantisNotConfigured as e:
         return {"error": str(e)}
     except httpx.HTTPStatusError as e:
